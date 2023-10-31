@@ -541,7 +541,7 @@ class GroupedQueryAttention(nn.Module):
         elif self.attn_impl == 'triton':
             self.attn_fn = triton_flash_attn_fn
         elif self.attn_impl == 'torch':
-	    if pjrt.using_pjrt():
+            if pjrt.using_pjrt():
 		self.attn_fn = ScaledDotProduct()
 	    else:
                 self.attn_fn = scaled_multihead_dot_product_attention
