@@ -542,8 +542,8 @@ class GroupedQueryAttention(nn.Module):
             self.attn_fn = triton_flash_attn_fn
         elif self.attn_impl == 'torch':
             if pjrt.using_pjrt():
-		self.attn_fn = ScaledDotProduct()
-	    else:
+                self.attn_fn = ScaledDotProduct()
+            else:
                 self.attn_fn = scaled_multihead_dot_product_attention
         else:
             raise ValueError(f'{attn_impl=} is an invalid setting.')
@@ -587,13 +587,13 @@ class GroupedQueryAttention(nn.Module):
             query = self.q_ln(query).to(dtype)
             key = self.k_ln(key).to(dtype)
 
-	if pjrt.using_pjrt():
-	    attn_weights = None
-	    past_key_value = None
+        if pjrt.using_pjrt():
+            attn_weights = None
+            past_key_value = None
             context = self.attn_fn(
-		q=query, k=key, v=query,
-		mask=key_padding_mask, att_mask=attention_mask)
-	else:
+        	q=query, k=key, v=query,
+        	mask=key_padding_mask, att_mask=attention_mask)
+        else:
             context, attn_weights, past_key_value = self.attn_fn(
                 query,
                 key,
