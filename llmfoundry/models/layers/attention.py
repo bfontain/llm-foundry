@@ -16,6 +16,9 @@ from torch import nn
 from llmfoundry.models.layers.fc import FC_CLASS_REGISTRY
 from llmfoundry.models.layers.norm import NORM_CLASS_REGISTRY
 
+import torch_xla.experimental.pjrt_backend
+import torch_xla.experimental.pjrt as pjrt
+from xformers.components.attention import ScaledDotProduct
 
 def is_flash_v2_installed():
     try:
@@ -185,7 +188,7 @@ def scaled_multihead_dot_product_attention(
 def check_valid_inputs(*tensors: torch.Tensor,
                        valid_dtypes: Optional[List[torch.dtype]] = None):
     if valid_dtypes is None:
-        valid_dtypes = [torch.float16, torch.bfloat16]
+        valid_dtypes = [torch.float16, torch.bfloat16, torch.float32]
     for tensor in tensors:
         if tensor.dtype not in valid_dtypes:
             raise TypeError(f'{tensor.dtype=} must be in {valid_dtypes=}.')
@@ -538,7 +541,10 @@ class GroupedQueryAttention(nn.Module):
         elif self.attn_impl == 'triton':
             self.attn_fn = triton_flash_attn_fn
         elif self.attn_impl == 'torch':
-            self.attn_fn = scaled_multihead_dot_product_attention
+	    if pjrt.using_pjrt():
+		self.attn_fn = ScaledDotProduct()
+	    else:
+                self.attn_fn = scaled_multihead_dot_product_attention
         else:
             raise ValueError(f'{attn_impl=} is an invalid setting.')
 
@@ -581,21 +587,28 @@ class GroupedQueryAttention(nn.Module):
             query = self.q_ln(query).to(dtype)
             key = self.k_ln(key).to(dtype)
 
-        context, attn_weights, past_key_value = self.attn_fn(
-            query,
-            key,
-            value,
-            self.n_heads,
-            self.kv_n_heads,
-            past_key_value=past_key_value,
-            softmax_scale=self.softmax_scale,
-            attn_bias=attn_bias,
-            key_padding_mask=key_padding_mask,
-            is_causal=is_causal,
-            dropout_p=self.attn_dropout_p,
-            training=self.training,
-            needs_weights=needs_weights,
-        )
+	if pjrt.using_pjrt():
+	    attn_weights = None
+	    past_key_value = None
+            context = self.attn_fn(
+		q=query, k=key, v=query,
+		mask=key_padding_mask, att_mask=attention_mask)
+	else:
+            context, attn_weights, past_key_value = self.attn_fn(
+                query,
+                key,
+                value,
+                self.n_heads,
+                self.kv_n_heads,
+                past_key_value=past_key_value,
+                softmax_scale=self.softmax_scale,
+                attn_bias=attn_bias,
+                key_padding_mask=key_padding_mask,
+                is_causal=is_causal,
+                dropout_p=self.attn_dropout_p,
+                training=self.training,
+                needs_weights=needs_weights,
+            )
 
         return self.out_proj(context), attn_weights, past_key_value
 
@@ -725,7 +738,7 @@ def gen_slopes(n_heads: int,
                alibi_bias_max: int = 8,
                device: Optional[torch.device] = None) -> torch.Tensor:
     _n_heads = 2**math.ceil(math.log2(n_heads))
-    m = torch.arange(1, _n_heads + 1, dtype=torch.float32, device=device)
+    m = torch.arange(1, _n_heads + 1, dtype=torch.bfloat16, device=device)
     m = m.mul(alibi_bias_max / _n_heads)
     slopes = (1. / torch.pow(2, m))
 

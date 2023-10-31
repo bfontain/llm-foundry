@@ -35,6 +35,7 @@ from llmfoundry.utils.config_utils import (log_config, pop_config,
                                            process_init_device,
                                            update_batch_size_info)
 
+import torch_xla.distributed.xla_multiprocessing as xmp
 
 def validate_config(cfg: DictConfig):
     """Validates compatible model and dataloader selection."""
@@ -193,7 +194,7 @@ def build_dataloader(cfg: DictConfig, tokenizer: PreTrainedTokenizerBase,
         raise ValueError(f'Not sure how to build dataloader with config: {cfg}')
 
 
-def main(cfg: DictConfig) -> Trainer:
+def main(index, cfg: DictConfig) -> Trainer:
     # Filter deprecation warning from torch internal usage
     warnings.filterwarnings(
         action='ignore',
@@ -201,6 +202,10 @@ def main(cfg: DictConfig) -> Trainer:
         message=
         'torch.distributed.*_base is a private function and will be deprecated.*'
     )
+
+    if index == 0:
+        import torch_xla.debug.profiler as xp
+        server = xp.start_server(9012)
 
     # Check for incompatibilities between the model and data loaders
     validate_config(cfg)
@@ -636,6 +641,8 @@ def main(cfg: DictConfig) -> Trainer:
         dist_timeout=dist_timeout,
         profiler=profiler,
         compile_config=compile_config,
+        index=index,
+        device='tpu',
     )
 
     print('Logging config')
@@ -662,4 +669,4 @@ if __name__ == '__main__':
     cfg = om.merge(yaml_cfg, cli_cfg)
     om.resolve(cfg)
     assert isinstance(cfg, DictConfig)
-    main(cfg)
+    xmp.spawn(main, args=(cfg,), nprocs=None)    
