@@ -16,8 +16,7 @@ from torch import nn
 from llmfoundry.models.layers.fc import FC_CLASS_REGISTRY
 from llmfoundry.models.layers.norm import NORM_CLASS_REGISTRY
 
-import torch_xla.experimental.pjrt_backend
-import torch_xla.experimental.pjrt as pjrt
+import torch_xla.runtime as rt
 from xformers.components.attention import ScaledDotProduct
 
 def is_flash_v2_installed():
@@ -541,7 +540,7 @@ class GroupedQueryAttention(nn.Module):
         elif self.attn_impl == 'triton':
             self.attn_fn = triton_flash_attn_fn
         elif self.attn_impl == 'torch':
-            if pjrt.using_pjrt():
+            if rt.using_pjrt():
                 self.attn_fn = ScaledDotProduct()
             else:
                 self.attn_fn = scaled_multihead_dot_product_attention
@@ -587,7 +586,7 @@ class GroupedQueryAttention(nn.Module):
             query = self.q_ln(query).to(dtype)
             key = self.k_ln(key).to(dtype)
 
-        if pjrt.using_pjrt():
+        if rt.using_pjrt():
             attn_weights = None
             past_key_value = None
             context = self.attn_fn(

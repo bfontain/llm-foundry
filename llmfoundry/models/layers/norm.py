@@ -4,8 +4,7 @@
 from typing import Dict, List, Optional, Type, Union
 
 import torch
-import torch_xla.experimental.pjrt_backend
-import torch_xla.experimental.pjrt as pjrt
+import torch_xla.runtime as pjrt
 
 def _cast_if_autocast_enabled(tensor: torch.Tensor) -> torch.Tensor:
     if torch.is_autocast_enabled():
@@ -38,7 +37,7 @@ class LPLayerNorm(torch.nn.LayerNorm):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if pjrt.using_pjrt():
+        if rt.using_pjrt():
             return torch.nn.functional.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
         module_device = x.device
         downcast_x = _cast_if_autocast_enabled(x)
@@ -84,7 +83,7 @@ class RMSNorm(torch.nn.Module):
             self.register_parameter('weight', None)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if pjrt.using_pjrt():
+        if rt.using_pjrt():
             return rms_norm(x, self.weight, self.eps).to(dtype=x.dtype)
         return rms_norm(x.float(), self.weight, self.eps).to(dtype=x.dtype)
 
@@ -108,7 +107,7 @@ class LPRMSNorm(RMSNorm):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if pjrt.using_pjrt():
+        if rt.using_pjrt():
             return rms_norm(x, self.weight, self.eps).to(dtype=x.dtype)
         downcast_x = _cast_if_autocast_enabled(x)
         downcast_weight = _cast_if_autocast_enabled(
