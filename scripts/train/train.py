@@ -1,200 +1,206 @@
 # Copyright 2022 MosaicML LLM Foundry authors
 # SPDX-License-Identifier: Apache-2.0
-import copy
-import gc
-import logging
-import os
 import sys
-import time
-import warnings
-from typing import Any, Dict, List, Optional, Union
 
-import torch
-from composer import Trainer
-from composer.core import Evaluator
-from composer.core.callback import Callback
-from composer.loggers import MosaicMLLogger
-from composer.loggers.mosaicml_logger import (MOSAICML_ACCESS_TOKEN_ENV_VAR,
-                                              MOSAICML_PLATFORM_ENV_VAR)
-from composer.profiler import (JSONTraceHandler, Profiler, TraceHandler,
-                               cyclic_schedule)
-from composer.utils import dist, get_device, reproducibility
 from omegaconf import DictConfig, ListConfig
 from omegaconf import OmegaConf as om
-from transformers import PreTrainedTokenizerBase
-
-from llmfoundry import (COMPOSER_MODEL_REGISTRY, ComposerHFCausalLM,
-                        MPTForCausalLM, build_finetuning_dataloader,
-                        build_text_denoising_dataloader)
-from llmfoundry.data.text_data import build_text_dataloader
-from llmfoundry.utils.builders import (build_algorithm, build_callback,
-                                       build_icl_data_and_gauntlet,
-                                       build_logger, build_optimizer,
-                                       build_scheduler, build_tokenizer)
-from llmfoundry.utils.config_utils import (log_config, pop_config,
-                                           process_init_device,
-                                           update_batch_size_info)
 
 import torch_xla.distributed.xla_multiprocessing as xmp
 
-def validate_config(cfg: DictConfig):
-    """Validates compatible model and dataloader selection."""
-    loaders = [cfg.train_loader]
-    if 'eval_loader' in cfg:
-        eval_loader = cfg.eval_loader
-        if isinstance(eval_loader, ListConfig):
-            for loader in eval_loader:
-                if loader.label is None:
+
+def main(index, cfg: DictConfig):
+    import copy
+    import gc
+    import logging
+    import os
+
+    import time
+    import warnings
+    from typing import Any, Dict, List, Optional, Union
+
+    import torch
+    from composer import Trainer
+    from composer.core import Evaluator
+    from composer.core.callback import Callback
+    from composer.loggers import MosaicMLLogger
+    from composer.loggers.mosaicml_logger import (MOSAICML_ACCESS_TOKEN_ENV_VAR,
+                                                  MOSAICML_PLATFORM_ENV_VAR)
+    from composer.profiler import (JSONTraceHandler, Profiler, TraceHandler,
+                                   cyclic_schedule)
+    from composer.utils import dist, get_device, reproducibility
+    from transformers import PreTrainedTokenizerBase
+
+    from llmfoundry import (COMPOSER_MODEL_REGISTRY, ComposerHFCausalLM,
+                            MPTForCausalLM, build_finetuning_dataloader,
+                            build_text_denoising_dataloader)
+    from llmfoundry.data.text_data import build_text_dataloader
+    from llmfoundry.utils.builders import (build_algorithm, build_callback,
+                                           build_icl_data_and_gauntlet,
+                                           build_logger, build_optimizer,
+                                           build_scheduler, build_tokenizer)
+    from llmfoundry.utils.config_utils import (log_config, pop_config,
+                                               process_init_device,
+                                               update_batch_size_info)
+
+
+
+    def validate_config(cfg: DictConfig):
+        """Validates compatible model and dataloader selection."""
+        loaders = [cfg.train_loader]
+        if 'eval_loader' in cfg:
+            eval_loader = cfg.eval_loader
+            if isinstance(eval_loader, ListConfig):
+                for loader in eval_loader:
+                    if loader.label is None:
+                        raise ValueError(
+                            'When specifying multiple evaluation datasets, each one must include the \
+                                `label` attribute.')
+                    loaders.append(loader)
+            else:
+                loaders.append(eval_loader)
+        for loader in loaders:
+            if loader.name == 'text':
+                if cfg.model.name in ['hf_prefix_lm', 'hf_t5']:
                     raise ValueError(
-                        'When specifying multiple evaluation datasets, each one must include the \
-                            `label` attribute.')
-                loaders.append(loader)
-        else:
-            loaders.append(eval_loader)
-    for loader in loaders:
-        if loader.name == 'text':
-            if cfg.model.name in ['hf_prefix_lm', 'hf_t5']:
+                        f'Model type "{cfg.model.name}" is not supported when using the "text " ' +\
+                        f'dataloader. Please use the "text_denoising" dataloader to pre-train that model type.')
+            elif loader.name == 'text_denoising':
+                if cfg.model.name == 'hf_causal_lm':
+                    raise ValueError(
+                        f'Model type "{cfg.model.name}" is not supported when using the "text_denoising" ' +\
+                        f'dataloader. Please use the "text" dataloader to pre-train that model type.')
+                if loader.mixture_of_denoisers.decoder_only_format and cfg.model.name == 'hf_t5':
+                    warnings.warn(
+                        'Model type "hf_t5" requires `decoder_only_format` to be ``False``. ' +\
+                        'Overriding `decoder_only_format` from ``True`` to ``False``.')
+                    loader.mixture_of_denoisers.decoder_only_format = False
+                if (not loader.mixture_of_denoisers.decoder_only_format
+                   ) and cfg.model.name == 'hf_prefix_lm':
+                    warnings.warn(
+                        'Model type "hf_prefix_lm" requires `decoder_only_format` to be ``True``. ' +\
+                        'Overriding `decoder_only_format` from ``False`` to ``True``.')
+                    loader.mixture_of_denoisers.decoder_only_format = True
+
+        if 'icl_tasks' in cfg:
+            if cfg.model.name == 'hf_t5':
                 raise ValueError(
-                    f'Model type "{cfg.model.name}" is not supported when using the "text " ' +\
-                    f'dataloader. Please use the "text_denoising" dataloader to pre-train that model type.')
-        elif loader.name == 'text_denoising':
-            if cfg.model.name == 'hf_causal_lm':
-                raise ValueError(
-                    f'Model type "{cfg.model.name}" is not supported when using the "text_denoising" ' +\
-                    f'dataloader. Please use the "text" dataloader to pre-train that model type.')
-            if loader.mixture_of_denoisers.decoder_only_format and cfg.model.name == 'hf_t5':
-                warnings.warn(
-                    'Model type "hf_t5" requires `decoder_only_format` to be ``False``. ' +\
-                    'Overriding `decoder_only_format` from ``True`` to ``False``.')
-                loader.mixture_of_denoisers.decoder_only_format = False
-            if (not loader.mixture_of_denoisers.decoder_only_format
-               ) and cfg.model.name == 'hf_prefix_lm':
-                warnings.warn(
-                    'Model type "hf_prefix_lm" requires `decoder_only_format` to be ``True``. ' +\
-                    'Overriding `decoder_only_format` from ``False`` to ``True``.')
-                loader.mixture_of_denoisers.decoder_only_format = True
+                    'ICL evaluation does not currently support Encoder-Decoder models, such as "hf_t5".'
+                )
 
-    if 'icl_tasks' in cfg:
-        if cfg.model.name == 'hf_t5':
-            raise ValueError(
-                'ICL evaluation does not currently support Encoder-Decoder models, such as "hf_t5".'
-            )
-
-    if (cfg.model.get('fc_type', 'torch') != 'te' and 'te' not in cfg.model.get(
-            'ffn_config', {}).get('ffn_type', 'mptmlp') and
-            'fp8' in cfg.precision):
-        warnings.warn(
-            "fp8 only supported for te.Linear layers. Either set `cfg.model.fc_typ='te'` or "
-            +
-            "`cfg.model.ffn_config.ffn_type='te_ln_mlp'` to enable layers using fp8 precision."
-        )
-
-    if (cfg.model.get('fc_type', 'torch') == 'te' or
-            'te' in cfg.model.get('ffn_config', {}).get('ffn_type', 'mptmlp')):
-        fsdp_config = cfg.get('fsdp_config', None)
-        act_ckpt = fsdp_config.get('activation_checkpointing', False)
-        act_ckpt_reentrant = fsdp_config.get(
-            'activation_checkpointing_reentrant', True)
-        if fsdp_config is not None and act_ckpt == True and act_ckpt_reentrant == False:
+        if (cfg.model.get('fc_type', 'torch') != 'te' and 'te' not in cfg.model.get(
+                'ffn_config', {}).get('ffn_type', 'mptmlp') and
+                'fp8' in cfg.precision):
             warnings.warn(
-                '`te.Linear` layers do not support activation_checkpointing with '
-                + '`activation_checkpointing_reentrant = False`. ' +
-                'Setting cfg.fsdp_config.activation_checkpointing_reentrant=True.'
+                "fp8 only supported for te.Linear layers. Either set `cfg.model.fc_typ='te'` or "
+                +
+                "`cfg.model.ffn_config.ffn_type='te_ln_mlp'` to enable layers using fp8 precision."
             )
-            cfg.fsdp_config.activation_checkpointing_reentrant = True
 
-    if 'te' in cfg.model.get('ffn_config', {}).get('ffn_type', 'mptmlp'):
-        warnings.warn(
-            '`te.LayerNormMLP` requires has issues with torch._dynamo. ' +
-            'Setting `torch._dynamo.config.suppress_errors = True` and falling back to eager.'
+        if (cfg.model.get('fc_type', 'torch') == 'te' or
+                'te' in cfg.model.get('ffn_config', {}).get('ffn_type', 'mptmlp')):
+            fsdp_config = cfg.get('fsdp_config', None)
+            act_ckpt = fsdp_config.get('activation_checkpointing', False)
+            act_ckpt_reentrant = fsdp_config.get(
+                'activation_checkpointing_reentrant', True)
+            if fsdp_config is not None and act_ckpt == True and act_ckpt_reentrant == False:
+                warnings.warn(
+                    '`te.Linear` layers do not support activation_checkpointing with '
+                    + '`activation_checkpointing_reentrant = False`. ' +
+                    'Setting cfg.fsdp_config.activation_checkpointing_reentrant=True.'
+                )
+                cfg.fsdp_config.activation_checkpointing_reentrant = True
+
+        if 'te' in cfg.model.get('ffn_config', {}).get('ffn_type', 'mptmlp'):
+            warnings.warn(
+                '`te.LayerNormMLP` requires has issues with torch._dynamo. ' +
+                'Setting `torch._dynamo.config.suppress_errors = True` and falling back to eager.'
+            )
+            torch._dynamo.config.suppress_errors = True  # type: ignore (third-party)
+
+        if cfg.model.get('load_in_8bit', False):
+            raise ValueError(
+                '`load_in_8bit` is only supported for evaluation rather than training.'
+            )
+
+
+    def build_composer_model(model_cfg: DictConfig,
+                             tokenizer: PreTrainedTokenizerBase):
+        warnings.filterwarnings(
+            action='ignore',
+            message='Torchmetrics v0.9 introduced a new argument class property')
+        if model_cfg.name not in COMPOSER_MODEL_REGISTRY:
+            raise ValueError(
+                f'Not sure how to build model with name={model_cfg.name}')
+        return COMPOSER_MODEL_REGISTRY[model_cfg.name](model_cfg, tokenizer)
+
+
+    def build_composer_peft_model(
+            pretrained_model_name_or_path: str, lora_args: Dict[str, Any],
+            tokenizer: PreTrainedTokenizerBase) -> ComposerHFCausalLM:
+        try:
+            from peft import LoraConfig, get_peft_model
+        except ImportError as e:
+            raise ImportError(
+                'Error importing from peft. Please verify that peft and peft utils '
+                +
+                'are installed by running `pip install -e .[peft]` from `llm-foundry/`. '
+                + f'Error encountered: {e}')
+
+        # 1) loads a hf model, 2) adds peft modules, 3) wraps it in a ComposerHFCausalLM.
+        print('Building Lora config...')
+        lora_cfg = LoraConfig(**lora_args)
+
+        print('Building model from HuggingFace checkpoint...')
+        model = MPTForCausalLM.from_pretrained(pretrained_model_name_or_path,
+                                               trust_remote_code=True)
+        print('Model built!')
+
+        print('Adding Lora modules...')
+        model = get_peft_model(model, lora_cfg)
+        print('Lora modules added!')
+
+        model = ComposerHFCausalLM(model, tokenizer)
+
+        return model
+
+
+    def print_trainable_parameters(model: torch.nn.Module) -> None:
+        # Prints the number of trainable parameters in the model.
+        trainable_params = 0
+        all_param = 0
+        for _, param in model.named_parameters():
+            all_param += param.numel()
+            if param.requires_grad:
+                trainable_params += param.numel()
+        print(
+            f'trainable params: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param}'
         )
-        torch._dynamo.config.suppress_errors = True  # type: ignore (third-party)
-
-    if cfg.model.get('load_in_8bit', False):
-        raise ValueError(
-            '`load_in_8bit` is only supported for evaluation rather than training.'
-        )
 
 
-def build_composer_model(model_cfg: DictConfig,
-                         tokenizer: PreTrainedTokenizerBase):
-    warnings.filterwarnings(
-        action='ignore',
-        message='Torchmetrics v0.9 introduced a new argument class property')
-    if model_cfg.name not in COMPOSER_MODEL_REGISTRY:
-        raise ValueError(
-            f'Not sure how to build model with name={model_cfg.name}')
-    return COMPOSER_MODEL_REGISTRY[model_cfg.name](model_cfg, tokenizer)
+    def build_dataloader(cfg: DictConfig, tokenizer: PreTrainedTokenizerBase,
+                         device_batch_size: int):
+        if cfg.name == 'text':
+            return build_text_dataloader(
+                cfg,
+                tokenizer,
+                device_batch_size,
+            )
+        elif cfg.name == 'text_denoising':
+            return build_text_denoising_dataloader(
+                cfg,
+                tokenizer,
+                device_batch_size,
+            )
+        elif cfg.name == 'finetuning':
+            return build_finetuning_dataloader(
+                cfg,
+                tokenizer,
+                device_batch_size,
+            )
+        else:
+            raise ValueError(f'Not sure how to build dataloader with config: {cfg}')
 
 
-def build_composer_peft_model(
-        pretrained_model_name_or_path: str, lora_args: Dict[str, Any],
-        tokenizer: PreTrainedTokenizerBase) -> ComposerHFCausalLM:
-    try:
-        from peft import LoraConfig, get_peft_model
-    except ImportError as e:
-        raise ImportError(
-            'Error importing from peft. Please verify that peft and peft utils '
-            +
-            'are installed by running `pip install -e .[peft]` from `llm-foundry/`. '
-            + f'Error encountered: {e}')
-
-    # 1) loads a hf model, 2) adds peft modules, 3) wraps it in a ComposerHFCausalLM.
-    print('Building Lora config...')
-    lora_cfg = LoraConfig(**lora_args)
-
-    print('Building model from HuggingFace checkpoint...')
-    model = MPTForCausalLM.from_pretrained(pretrained_model_name_or_path,
-                                           trust_remote_code=True)
-    print('Model built!')
-
-    print('Adding Lora modules...')
-    model = get_peft_model(model, lora_cfg)
-    print('Lora modules added!')
-
-    model = ComposerHFCausalLM(model, tokenizer)
-
-    return model
-
-
-def print_trainable_parameters(model: torch.nn.Module) -> None:
-    # Prints the number of trainable parameters in the model.
-    trainable_params = 0
-    all_param = 0
-    for _, param in model.named_parameters():
-        all_param += param.numel()
-        if param.requires_grad:
-            trainable_params += param.numel()
-    print(
-        f'trainable params: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param}'
-    )
-
-
-def build_dataloader(cfg: DictConfig, tokenizer: PreTrainedTokenizerBase,
-                     device_batch_size: int):
-    if cfg.name == 'text':
-        return build_text_dataloader(
-            cfg,
-            tokenizer,
-            device_batch_size,
-        )
-    elif cfg.name == 'text_denoising':
-        return build_text_denoising_dataloader(
-            cfg,
-            tokenizer,
-            device_batch_size,
-        )
-    elif cfg.name == 'finetuning':
-        return build_finetuning_dataloader(
-            cfg,
-            tokenizer,
-            device_batch_size,
-        )
-    else:
-        raise ValueError(f'Not sure how to build dataloader with config: {cfg}')
-
-
-def main(index, cfg: DictConfig) -> Trainer:
     # Filter deprecation warning from torch internal usage
     warnings.filterwarnings(
         action='ignore',
@@ -658,7 +664,6 @@ def main(index, cfg: DictConfig) -> Trainer:
     trainer.fit()
 
     print('Done.')
-    return trainer
 
 
 if __name__ == '__main__':
