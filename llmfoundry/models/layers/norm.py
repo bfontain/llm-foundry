@@ -4,7 +4,7 @@
 from typing import Dict, List, Optional, Type, Union
 
 import torch
-import torch_xla.runtime as pjrt
+import torch_xla.runtime as rt
 
 def _cast_if_autocast_enabled(tensor: torch.Tensor) -> torch.Tensor:
     if torch.is_autocast_enabled():
