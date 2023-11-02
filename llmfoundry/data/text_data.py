@@ -19,6 +19,9 @@ from streaming import Stream, StreamingDataset
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerBase
 
+import torch_xla.distributed.parallel_loader as pl
+import torch_xla.runtime as rt
+import torch_xla.core.xla_model as xm
 
 class StreamingTextDataset(StreamingDataset):
     """Generic text dataset using MosaicML's StreamingDataset.
@@ -294,6 +297,9 @@ def build_text_dataloader(
         persistent_workers=cfg.get('persistent_workers', True),
         timeout=cfg.get('timeout', 0),
     )
+    if rt.using_pjrt():
+        dl = pl.MpDeviceLoader(dl, xm.xla_device())
+
 
     # If we pretokenized, we may not have padding, in which case the
     # tokenizer may not have a pad_token_id. In this case, we can
