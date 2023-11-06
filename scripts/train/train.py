@@ -6,7 +6,11 @@ from omegaconf import DictConfig, ListConfig
 from omegaconf import OmegaConf as om
 
 import torch_xla.distributed.xla_multiprocessing as xmp
-
+from functools import partial
+from torch_xla.distributed.fsdp import XlaFullyShardedDataParallel as FSDP, checkpoint_module
+from torch_xla.distributed.fsdp.wrap import (size_based_auto_wrap_policy,
+                                             transformer_auto_wrap_policy)
+import torch_xla.runtime as rt
 
 def main(index, cfg: DictConfig):
     import copy
@@ -38,6 +42,7 @@ def main(index, cfg: DictConfig):
                                            build_icl_data_and_gauntlet,
                                            build_logger, build_optimizer,
                                            build_scheduler, build_tokenizer)
+    from llmfoundry.models.layers import (attention, blocks)
     from llmfoundry.utils.config_utils import (log_config, pop_config,
                                                process_init_device,
                                                update_batch_size_info)
@@ -200,6 +205,22 @@ def main(index, cfg: DictConfig):
         else:
             raise ValueError(f'Not sure how to build dataloader with config: {cfg}')
 
+
+    if rt.using_pjrt():
+        # FSDP XLA policy
+        auto_wrap_policy = partial(
+            transformer_auto_wrap_policy,
+            transformer_layer_cls={blocks.MPTBlock})
+        auto_wrapper_callable = lambda m, *args, **kwargs: FSDP(
+            checkpoint_module(m), *args, **kwargs)
+        fsdp_wrap = lambda m: FSDP(
+            m,
+            compute_dtype=torch.bfloat16,
+            shard_param_on_dim_0=True,
+            pin_layout_in_collective_ops=True,
+            auto_wrap_policy=auto_wrap_policy,
+            auto_wrapper_callable=auto_wrapper_callable
+        )
 
     # Filter deprecation warning from torch internal usage
     warnings.filterwarnings(
@@ -534,6 +555,9 @@ def main(index, cfg: DictConfig):
         build_algorithm(str(name), algorithm_cfg)
         for name, algorithm_cfg in algorithm_configs.items()
     ] if algorithm_configs else None
+
+    if rt.using_pjrt():
+        model = fsdp_wrap(model)
 
     # Dataloaders
     print('Building train loader...')
