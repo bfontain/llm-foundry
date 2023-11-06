@@ -556,8 +556,6 @@ def main(index, cfg: DictConfig):
         for name, algorithm_cfg in algorithm_configs.items()
     ] if algorithm_configs else None
 
-    if rt.using_pjrt():
-        model = fsdp_wrap(model)
 
     # Dataloaders
     print('Building train loader...')
@@ -616,6 +614,9 @@ def main(index, cfg: DictConfig):
             model = model.to(dtype=torch.bfloat16)
         elif model_config.get('master_weights_dtype') in ('f16', 'float16'):
             model = model.to(dtype=torch.float16)
+
+    if rt.using_pjrt():
+        model = fsdp_wrap(model)
 
     # Log number of parameters
     n_params = sum(p.numel() for p in model.parameters())
