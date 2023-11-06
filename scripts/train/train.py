@@ -217,7 +217,7 @@ def main(index, cfg: DictConfig):
             m,
             compute_dtype=torch.bfloat16,
             shard_param_on_dim_0=True,
-            pin_layout_in_collective_ops=True,
+            pin_layout_in_collective_ops=False,
             auto_wrap_policy=auto_wrap_policy,
             auto_wrapper_callable=auto_wrapper_callable
         )
