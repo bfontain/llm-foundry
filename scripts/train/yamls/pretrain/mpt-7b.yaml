@@ -85,7 +85,7 @@ seed: ${global_seed}
 device_eval_batch_size: 8
 device_train_microbatch_size: 8
 # device_train_microbatch_size: auto
-precision: f32
+precision: fp32
 
 # FSDP
 #fsdp_config:
