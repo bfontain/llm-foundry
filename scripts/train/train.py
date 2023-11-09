@@ -49,6 +49,17 @@ def main(index, cfg: DictConfig):
     import torch_xla.core.xla_model as xm
 
 
+    class TextIterableDataset(IterableDataset):
+        def __init__(self, tokenizer, n_samples):
+            self.tokenizer = tokenizer
+            self.n_samples = n_samples
+
+        def __iter__(self):
+            for _ in range (self.n_samples):
+                yield self.tokenizer("a"*4000, max_length=self.tokenizer.model_max_length)
+
+        def __len__(self):
+            return self.n_samples
 
     def validate_config(cfg: DictConfig):
         """Validates compatible model and dataloader selection."""
@@ -569,10 +580,19 @@ def main(index, cfg: DictConfig):
 
     # Dataloaders
     print('Building train loader...')
-    train_loader = build_dataloader(
-        train_loader_config,
-        tokenizer,
-        device_train_batch_size,
+    n_samples = 10000
+    dataset = TextIterableDataset(tokenizer, n_samples)
+    collate_fn = transformers.DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    train_loader = DataLoader(
+        dataset,
+        collate_fn=collate_fn,
+        batch_size=device_batch_size,
+        drop_last=False,
+        num_workers=1,
+        pin_memory=True,
+        prefetch_factor=2,
+        persistent_workers=True,
+        timeout=0,
     )
 
     barrier(index)
@@ -591,9 +611,21 @@ def main(index, cfg: DictConfig):
         eval_configs = eval_loader_config if is_multi_eval else [
             eval_loader_config
         ]
-        for eval_config in eval_configs:
-            eval_dataloader = build_dataloader(eval_config, tokenizer,
-                                               device_eval_batch_size)
+        for eval_config in eval_configs: 
+            n_samples = 10000
+            dataset = TextIterableDataset(tokenizer, n_samples)
+            collate_fn = transformers.DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+            eval_dataloader = DataLoader(
+                dataset,
+                collate_fn=collate_fn,
+                batch_size=device_batch_size,
+                drop_last=False,
+                num_workers=1,
+                pin_memory=True,
+                prefetch_factor=2,
+                persistent_workers=True,
+                timeout=0,
+            )
             eval_loader = Evaluator(
                 label=f'eval/{eval_config.label}' if is_multi_eval else 'eval',
                 dataloader=eval_dataloader,
