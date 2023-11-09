@@ -12,6 +12,20 @@ from torch_xla.distributed.fsdp.wrap import (size_based_auto_wrap_policy,
                                              transformer_auto_wrap_policy)
 import torch_xla.runtime as rt
 
+from torch.utils.data import IterableDataset, DataLoader
+
+class TextIterableDataset(IterableDataset):
+    def __init__(self, tokenizer, n_samples):
+        self.tokenizer = tokenizer
+        self.n_samples = n_samples
+
+    def __iter__(self):
+        for _ in range (self.n_samples):
+            yield self.tokenizer("a"*4000, max_length=self.tokenizer.model_max_length)
+
+    def __len__(self):
+        return self.n_samples
+
 def main(index, cfg: DictConfig):
     import copy
     import gc
@@ -48,20 +62,7 @@ def main(index, cfg: DictConfig):
                                                process_init_device,
                                                update_batch_size_info)
     import torch_xla.core.xla_model as xm
-    from torch.utils.data import IterableDataset, DataLoader
 
-
-    class TextIterableDataset(IterableDataset):
-        def __init__(self, tokenizer, n_samples):
-            self.tokenizer = tokenizer
-            self.n_samples = n_samples
-
-        def __iter__(self):
-            for _ in range (self.n_samples):
-                yield self.tokenizer("a"*4000, max_length=self.tokenizer.model_max_length)
-
-        def __len__(self):
-            return self.n_samples
 
     def validate_config(cfg: DictConfig):
         """Validates compatible model and dataloader selection."""
@@ -590,8 +591,9 @@ def main(index, cfg: DictConfig):
         collate_fn=collate_fn,
         batch_size=device_train_batch_size,
         drop_last=False,
-        num_workers=0,
+        num_workers=1,
         pin_memory=True,
+        prefetch_factor=2,
         persistent_workers=True,
         timeout=0,
     )
@@ -621,8 +623,9 @@ def main(index, cfg: DictConfig):
                 collate_fn=collate_fn,
                 batch_size=device_eval_batch_size,
                 drop_last=False,
-                num_workers=0,
+                num_workers=1,
                 pin_memory=True,
+                prefetch_factor=2,
                 persistent_workers=True,
                 timeout=0,
             )
