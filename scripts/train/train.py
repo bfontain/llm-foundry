@@ -592,7 +592,6 @@ def main(index, cfg: DictConfig):
         drop_last=False,
         num_workers=0,
         pin_memory=True,
-        prefetch_factor=2,
         persistent_workers=True,
         timeout=0,
     )
@@ -624,7 +623,6 @@ def main(index, cfg: DictConfig):
                 drop_last=False,
                 num_workers=0,
                 pin_memory=True,
-                prefetch_factor=2,
                 persistent_workers=True,
                 timeout=0,
             )
