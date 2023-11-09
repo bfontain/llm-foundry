@@ -208,12 +208,11 @@ def main(index, cfg: DictConfig):
 
     def barrier(index: int):
         print(f"Executing barrier for {index}")
-        print(f"World size {xm.xrt_world_size()}")
         xm.mark_step()
         t = torch.tensor([index], device=xm.xla_device())
         result = xm.all_gather(t)
         xm.mark_step()
-        print(f"Resulting tensor for {index} {t.cpu()}")
+        print(f"Resulting tensor for {index} {result.cpu()}")
 
 
     if rt.using_pjrt():
