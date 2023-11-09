@@ -48,7 +48,7 @@ def main(index, cfg: DictConfig):
                                                process_init_device,
                                                update_batch_size_info)
     import torch_xla.core.xla_model as xm
-    from torch.utils.data import IterableDataset
+    from torch.utils.data import IterableDataset, DataLoader
 
 
     class TextIterableDataset(IterableDataset):
