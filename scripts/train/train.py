@@ -21,6 +21,7 @@ def main(index, cfg: DictConfig):
     import time
     import warnings
     from typing import Any, Dict, List, Optional, Union
+    import transformers
 
     import torch
     from composer import Trainer
