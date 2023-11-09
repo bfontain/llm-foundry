@@ -21,7 +21,7 @@ class TextIterableDataset(IterableDataset):
 
     def __iter__(self):
         for _ in range (self.n_samples):
-            yield self.tokenizer("a"*4000, max_length=self.tokenizer.model_max_length)
+            yield self.tokenizer("a"*1000, max_length=self.tokenizer.model_max_length)
 
     def __len__(self):
         return self.n_samples
@@ -570,11 +570,11 @@ def main(index, cfg: DictConfig):
         for name, algorithm_cfg in algorithm_configs.items()
     ] if algorithm_configs else None
 
-    tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+    tokenizer.pad_token_id = tokenizer.eos_token_id
 
     # Dataloaders
     print('Building train loader...')
-    n_samples = 10000
+    n_samples = 100
     dataset = TextIterableDataset(tokenizer, n_samples)
     collate_fn = transformers.DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     train_loader = DataLoader(
@@ -582,7 +582,7 @@ def main(index, cfg: DictConfig):
         collate_fn=collate_fn,
         batch_size=device_train_batch_size,
         drop_last=False,
-        num_workers=1,
+        num_workers=8,
         pin_memory=True,
         prefetch_factor=2,
         persistent_workers=True,
