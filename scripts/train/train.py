@@ -588,7 +588,7 @@ def main(index, cfg: DictConfig):
     train_loader = DataLoader(
         dataset,
         collate_fn=collate_fn,
-        batch_size=device_batch_size,
+        batch_size=device_train_batch_size,
         drop_last=False,
         num_workers=1,
         pin_memory=True,
@@ -620,7 +620,7 @@ def main(index, cfg: DictConfig):
             eval_dataloader = DataLoader(
                 dataset,
                 collate_fn=collate_fn,
-                batch_size=device_batch_size,
+                batch_size=device_eval_batch_size,
                 drop_last=False,
                 num_workers=1,
                 pin_memory=True,
