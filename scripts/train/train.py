@@ -21,7 +21,7 @@ class TextIterableDataset(IterableDataset):
 
     def __iter__(self):
         for _ in range (self.n_samples):
-            yield self.tokenizer("a"*1000, max_length=self.tokenizer.model_max_length)
+            yield self.tokenizer("a"*10000, max_length=self.tokenizer.model_max_length)
 
     def __len__(self):
         return self.n_samples
