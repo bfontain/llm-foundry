@@ -46,6 +46,7 @@ def main(index, cfg: DictConfig):
     from llmfoundry.utils.config_utils import (log_config, pop_config,
                                                process_init_device,
                                                update_batch_size_info)
+    import torch_xla.core.xla_model as xm
 
 
 
@@ -204,6 +205,14 @@ def main(index, cfg: DictConfig):
             )
         else:
             raise ValueError(f'Not sure how to build dataloader with config: {cfg}')
+
+    def barrier(index: int):
+        print(f"Executing barrier for {index}")
+        xm.mark_step()
+        t = torch.tensor([index], device=xm.xla_device())
+        result = xm.all_gather(t)
+        xm.mark_step()
+        print(f"Resulting tensor for {index} {t.cpu()}")
 
 
     if rt.using_pjrt():
@@ -556,6 +565,7 @@ def main(index, cfg: DictConfig):
         for name, algorithm_cfg in algorithm_configs.items()
     ] if algorithm_configs else None
 
+    barrier(index)
 
     # Dataloaders
     print('Building train loader...')
@@ -565,8 +575,12 @@ def main(index, cfg: DictConfig):
         device_train_batch_size,
     )
 
+    barrier(index)
+
     if mosaicml_logger is not None:
         mosaicml_logger.log_metrics({'data_validated': time.time()})
+
+    barrier(index)
 
     ## Evaluation
     print('Building eval loader...')
@@ -588,6 +602,8 @@ def main(index, cfg: DictConfig):
             eval_loaders.append(eval_loader)
 
     eval_gauntlet_callback = None
+
+    barrier(index)
 
     if icl_tasks_config is not None:
         icl_evaluators, _, eval_gauntlet_callback = build_icl_data_and_gauntlet(
