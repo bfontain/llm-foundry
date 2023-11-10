@@ -574,7 +574,7 @@ def main(index, cfg: DictConfig):
 
     # Dataloaders
     print('Building train loader...')
-    n_samples = 100
+    n_samples = 1000
     dataset = TextIterableDataset(tokenizer, n_samples)
     collate_fn = transformers.DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     train_loader = DataLoader(
